@@ -107,7 +107,6 @@ val stmtFactP3P4DF sparkc.sql(
 """SELECT current_account_nbr, day_deling FROM (
 
 SELECT current_account_dbr, cast(nbr_days_delq_at_cyc as string) as day_deling, row_number() OVER (PARTITION BY current_account_nbr ORDER BY CASE WHEN BILLING_CYCLE_DATE is null THEN CAST('0001-01-01 AS timestamp) ELSE CAST(billing_cycle_date AS timestamp) END desc) rownumber FROM S WHERE billing_cycle_year >= year(date_sub(current_date(), 42)) AND (billing_cycle_date BETWEEN date_sub(current_date(), 42) AND current_date()) AND datediff (current_date(), billing_cycle_date) <= 40)A WHERE rownumber 1""".format(stmtFactP3P4Tb))
-
 stmtFactP3P4DF.persist()
 
 logger.info("Count of stmtFactP3P4DF is =>" + stmtFactP3P4DF.count())
