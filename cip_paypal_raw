@@ -1,0 +1,333 @@
+System.setProperty("PROCESS_NAME", "cip_paypal_raw")
+
+val customConfig = new CustomConfigurationFactory(String.format("%s,%s",
+
+Constants.FILE_HANDLER_NAME,
+
+Constants.SPLUNK_HANDLER_NAME))
+
+ConfigurationFactory.setConfigurationFactory(customConfig)
+
+val appName = sparkc.conf.get("spark.app.name")
+
+val logger = CustomLogger.create(appName)
+
+//building spark object with required configuration using Sparksession builder
+
+sparkc.conf.set("spark.sql.autoBroadcastJoinThreshold", -1)
+
+def calNumPartitions (blockSize: Long, df: DataFrame): Int = {
+
+df.persist()
+
+logger.info("count of df to calculate number of partitions: " + df.count())
+
+val estimatesize = sparkc.sessionState.executeplan(df.queryExecution.logical).optimizedPlan.stats.sizeInBytes
+
+val numParts = (estimatesize / blocksize).toInt + 1
+
+logger.info(s"estimate df size in bytes: Sestimatesize / block size from conf: $blocksize = number of partitions: $numParts")
+
+numParts
+
+{
+
+//noinspection ComparingUnrelatedTypes
+
+def syfAccountsRcpscc(conf:config): Unit = {
+try{
+logger.info("Getting Source and Target information from config file")
+
+val xcdcip3T: String = conf.getString("cip_paypal.source.rcpscc.input_xcdcip3_tb")
+
+val xcdcip4T: String = conf.getString("cip_paypal.source.rcpscc.input_xcdcip4_tb") val xcdcip5T: String = conf.getString("cip_paypal.source.rcpscc.input_xcdcips_tb")
+
+val extTokenAcctxrefT: String = conf.getString("cip_paypal.source.rcpscc.input_acct_xref_tb")
+
+val tTokenCdcip3AcctSecureInfoDimT: String = conf.getString("cip_paypal.source.rcpscc.input_acct_secure_info_dim_p3_tb
+
+") val extTokenSyfidcdcip4AcctSecureInfoDimT: String = conf.getString("cip_paypal.source.rcpscc.input_acct_secure_info_dim_p4_th")
+
+val extTokenCdcip5AcctSecureInfoDimT: String = conf.getstring("cip_paypal.source.rcpscc.input_acct_secure_info_dim_p5_tb")
+
+val cipPaypalFilter: String = conf.getString("cip_paypal.source.filter.cip_paypal_filter")
+
+val stmtFactP3P4Tb: String = conf.getString("cip_paypal.source.rcpscc.input_cdci_statement_fact_p3_p4_tb")
+
+val stmtFactPSTD: String = conf.getString("cip_paypal.source.rcpscc.input_cdci_statement_fact_p5_tb")
+
+val outputloc: String = conf.getString("cip_paypal.target.staging.output_paypal_temp_loc")
+
+logger.info("Account Dim P3, P4 and PS column list")
+
+val p3P4P5Cols = List(
+
+"current_account_nbr",
+
+"primary_ch_first_name",
+
+primary_ch_last_name", "
+
+"primary_ch_address_line_1",
+
+"primary_ch_address_line_2",
+
+"primary_ch_city_name",
+
+"primary_ch_res_state_code",
+
+"primary_ch_zip_code",
+
+"open_date",
+
+"internal_status",
+
+"external_status",
+
+autn_code",
+
+"client_id",
+
+"placeholder_flag",
+
+"purged_account_flag",
+
+"dsvr_flag",
+
+"partner_id"
+
+)
+
+logger.info("Creating the Account Dim P3, P4 and P5 filter conditions")
+
+logger.info("Calculating stmtFactP3P4DF dataframe")
+
+val stmtFactP3P4DF sparkc.sql(
+
+"""SELECT current_account_nbr, day_deling FROM (
+
+SELECT current_account_dbr, cast(nbr_days_delq_at_cyc as string) as day_deling, row_number() OVER (PARTITION BY current_account_nbr ORDER BY CASE WHEN BILLING_CYCLE_DATE is null THEN CAST('0001-01-01 AS timestamp) ELSE CAST(billing_cycle_date AS timestamp) END desc) rownumber FROM S WHERE billing_cycle_year >= year(date_sub(current_date(), 42)) AND (billing_cycle_date BETWEEN date_sub(current_date(), 42) AND current_date()) AND datediff (current_date(), billing_cycle_date) <= 40)A WHERE rownumber 1""".format(stmtFactP3P4Tb))
+
+stmtFactP3P4DF.persist()
+
+logger.info("Count of stmtFactP3P4DF is =>" + stmtFactP3P4DF.count())
+
+logger.info("Calculating stmtFactPSDF dataframe")
+
+val stmtFactPSDF sparkc.sql("""SELECT current_account_nbr, day_deling FROM (
+
+SELECT current_account_nbr, cast(nbr_days_delq_at_cyc as string) as day deling,
+
+row_number() OVER (PARTITION BY current_account_nbr
+
+ORDER BY CASE WHEN billing_cycle_date is null THEN CAST('0001-01-01' AS timestamp) ELSE billing_cycle_date END desc) rownumber FROM %S WHERE datediff(current_date(), to_date(billing_cycle_date)) <= 40) A WHERE rownumber 1 """.format(stmtFactPSTb))
+
+stmtFactPSDF.persist()
+
+logger.info("Combining statement fact p3, p4 and p5 data")
+
+val statementFactout = stmtFactP3P4DF.union(stmtFactPSDF)
+
+logger.info(s"Reading xcdcip3 data from Sxcdcip3T table") val xcdcip3Df: Dataset [Row] = sparkc.table(xcdcip3T).
+
+selectExpr(p3P4P5Cols: _*).
+
+filter(cipPaypalFilter)
+
+logger.info(s"Reading xcdcipe data from $xcdcip4T table")
+
+val xcdcip4Df: Dataset [Row] = sparkc.table(xcdcip4T). selectExpr(p3P4P5Cols: *). filter(cipPaypalFilter)
+
+logger.info(s"Reading xcdcips data from Sxcdcip5T table")
+
+val xcdcip5Df: Dataset [Row] = sparkc.table(xcdcip5T).
+
+selectExpr(p3P4P5Cols: *).
+
+filter(cipPaypalFilter)
+
+logger.info("Merging Account Dim P3, P4 and PS outputs")
+
+val fullAccountDimDf Seq(xcdcip3Df, xcdcip4Df, xcdcip5Df).reduce(_ union_)
+
+
+fullAccountDimDf.persist(StorageLevel.MEMORY_AND_DISK)
+
+logger.info("full_account_dim_df count :" + fullAccountDimDf.count())
+
+val ldapString = "lpad(acct_token_id,16, '0') as current_account_nbr"
+
+logger.info(s"Reading StTokenCdcip3AcctSecureInfoDimt table")
+
+val acctSecureP3 = sparkc.table(tTokenCdcip3AcctsecureInfoDimt).
+
+selectExpr(s"$ldapstring", "primary_ch_ssn_token as ssn", "primary_ch_birth_date_token as dob")
+
+logger.info(s"Reading SextTokenSyfidcdcip4AcctSecureInfoDimt table") val acctsecureP4 = sparkc.table(extTokenSyfidcdcip4AcctSecureInfoDimT).
+
+selectExpr(s"$ldapString", "primary_ch_ssn_token as ssn",
+
+"primary_ch_birth_date_token as dob")
+
+logger.info(s"Reading $extTokenCdcipsAcctSecureInfoDimt table") I
+
+val acctsecurePS sparkc.table(extTokenCdcip5AcctSecureInfoDimT).
+
+selectExpr(s"$ldapstring", "primary_ch_ssn as ssn", "primary_ch_birth_date as dob")
+
+logger.info("Combining acct_secure p3, p4 and p5 data")
+
+val acctsecure = Seq(acctSecureP3, acctSecureP4, acctSecureP5).reduce(_ union_)
+
+logger.info("Joining full_account_dim_df and acct_secure p3, p4, p5")
+
+val tTokenAcctsecureDim fullAccountDimDf.join(acctsecure, Seq("current_account_nbr"), "left")
+
+tTokenAcctsecureDim.persist(StorageLevel.MEMORY_AND_DISK)
+
+logger.info("t_token_acct_secure_dim count:"+tTokenAcctSecureDim.count())
+
+logger.info(s"Reading SextTokenAcctxreft table")
+
+val extTokenAcctxrefDf sparkc.table(extTokenAcctxreft).
+
+selectExpr("customer_acct_nbr as current_account_nbr_pty", "customer_acct_nbr_syf as current_account_nbr")
+
+logger.info("Joining merged Account Dim output with statement Fact output and applying SYFID filter conditions")
+
+val fullAcctDimstatFactDF TokenAcctSecureDim.join(statementFactout, Seq("current_account_nbr"), "left")
+
+logger.info("storing all source data required for primary account holder information and generating syf_key")
+
+val extcipPaypalRawOf fullAcctDimStmtFactDF.join(extTokenAcctXrefDf, Seq("current_account_nbr"), "LEFT").filter("""current_account_nbr_pty is not null***). withColumn("account_type", lit("RCPSCC")).withColumn("relationship_cd", lit("P")).
+
+withColumn("syf_key", concat_ws("|", col("current_account_nbr_pty"), col("relationship_cd"))). withColumn("rndm_nbr", rndmNbr(lit(200))).selectExpr(
+
+"syf_key",
+
+"current_account_nbr_pty as account_nbr_pty",
+
+"ssn",
+
+"dob",
+
+"primary_ch_first_name as first_name",
+
+"primary_ch_last_name as last_name",
+
+"primary_ch_address_line_1 as address1",
+
+"primary_ch_address_line_2 as address2",
+
+"primary_ch_city_name as city",
+
+"primary_ch_res_state_code as state",
+
+"primary_ch_zip_code as zip_code",
+
+"open_date",
+
+"internal_status",
+
+"external_status",
+
+"auth_code",
+
+"relationship_cd",
+
+"account_type",
+
+"client_id",
+
+"day_deling",
+
+"partner_id",
+
+"CURRENT_TIMESTAMP() as edl_load_ts",
+
+"rndm_nbr"
+
+val partitionBlockSize = conf.getBytes("cip_paypal.target.partitionBlockSize")
+
+logger.info(s"partitionBlocksize: SpartitionBlocksize")
+
+val numparts calNumPartitions(partitionBlocksize.toLong, extcipPaypalRawDf)
+
+logger.info(s"writing the final data to soutputLoc temp location")
+
+extcipPaypalRawof.repartition(numParts).write.mode("overwrite").parquet (outputLoc)
+
+I
+
+}
+
+catch {
+
+case e: Exception =>
+
+logger.error("Error in saving to the hdfs temp path")
+
+logger.error("Exception=>" + e)
+
+sys.exit(1)
+
+}
+
+}
+
+def main(): Unit = {
+
+logger.info("Reading the arguments passed to the spark job")
+
+//reading the arguments passed to the spark job
+
+val args = sparkc.conf.get("spark.driver.args").split(",")
+
+if (args.length !=1) {
+
+logger.error("One arguments need to be passed as driver argument. Only "+args.length+" is passed")
+
+sys.exit(1)
+
+}
+
+val confFile = args(e)
+
+val conf = ConfigFactory.load(ConfigFactory.parseFile(new File(confFile)))
+
+logger.info(s*********Starting SYFID2 CIP PAYPAL Raw Spark Job********")
+
+try {
+
+syfAccountsRcpscc(conf)
+
+logger.info("Unpersisting persisted data")
+
+//unpersisting persisted data
+
+sparkc.sparkcontext.getPersistentRDDs.foreach(x => x._2.unpersist)
+
+sparkc.sqlContext.clearCache()
+
+logger.info(s"********SYFID2 CIP PAYPAL RAW Spark Job Completed********")
+
+sparkc.stop()
+
+sys.exit(e)
+
+}
+
+catch {
+
+case e: Exception => logger.error("Calling the raw table creation function failed.")
+
+logger.error("Exception=>"+e)
+
+sparkc.sparkContext.getPersistentRDDs.foreach(x => x._2.unpersist())
+
+sys.exit(1)
+
+}
+
+}
+main()
