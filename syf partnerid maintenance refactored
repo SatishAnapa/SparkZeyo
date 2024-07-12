@@ -1,0 +1,144 @@
+import java.io.File
+import com.typesafe.config.{Config, ConfigFactory}
+import org.apache.log4j.{Level, LogManager, Logger}
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.functions._
+
+object SyfPartnerIDMaintenance {
+  
+  @transient var ext_syf_partner_id_src_raw = spark.emptyDataFrame 
+  @transient var ext_syf_partner_id_prcd = spark.emptyDataFrame
+
+  def exeMaintenance(conf: Config, logger: Logger, spark: SparkSession): Unit = {
+    logger.info("Syf PartnerID Over Match Started")
+
+    ext_syf_partner_id_src_raw = spark.table(conf.getString("syf_partnerid.source.ext_syf_partner_id_src"))
+      .filter("flagtype = 'PS'")
+      .persist()
+    ext_syf_partner_id_src_raw.createOrReplaceTempView("ext_syf_partner_id_src_raw")
+    
+    ext_syf_partner_id_prcd = spark.read.parquet(conf.getString("syf_partnerid.finalwrite.matching_engine_output"))
+    ext_syf_partner_id_prcd.createOrReplaceTempView("ext_syf_partner_id_prcd")
+
+    val src = ext_syf_partner_id_src_raw
+      .select("merchantnumber", "partnerid")
+      .filter("trim(partnerid) != '' AND partnerid IS NOT NULL AND length(partnerid) = 10")
+
+    val srcFinal = src
+      .withColumnRenamed("partnerid", "src_partnerid")
+      .withColumnRenamed("merchantnumber", "src_merchantnumber")
+
+    val target = spark.sql(
+      """
+        |SELECT 
+        |  merchantnumber, 
+        |  partnerid, 
+        |  matchstep, 
+        |  matchkey, 
+        |  partnerSPAGroupingId, 
+        |  hqMerchantNumber, 
+        |  aii, 
+        |  avi, 
+        |  taxpayerid 
+        |FROM ext_syf_partner_id_prcd
+      """.stripMargin)
+
+    val combineDiscrepancy = srcFinal.join(target, srcFinal("src_merchantnumber") === target("merchantnumber"), "left")
+      .filter("src_partnerid != partnerid")
+
+    val combineNonDiscrepancy = srcFinal.join(target, srcFinal("src_merchantnumber") === target("merchantnumber"), "left")
+      .filter("src_partnerid = partnerid")
+
+    val combineFull = srcFinal.join(target, srcFinal("src_merchantnumber") === target("merchantnumber"), "left")
+
+    val overMatchDf = combineFull.groupBy("src_partnerid", "partnerid").count()
+      .groupBy("partnerid").count()
+      .filter("count > 1")
+
+    val overMatchDfFinal = combineDiscrepancy.join(overMatchDf, "partnerid")
+      .selectExpr("merchantnumber", "src_partnerid as rapid_partnerid", "partnerid as final_partnerid")
+
+    if (overMatchDfFinal.count() == 0) {
+      logger.info("No Overmatch Scenarios were Found")
+    } else {
+      logger.info("Overmatch Scenarios were Found")
+    }
+
+    val underMatchDf = combineFull.groupBy("src_partnerid", "partnerid").count()
+      .groupBy("src_partnerid").count()
+      .filter("count > 1")
+
+    val underMatchDfFinal = underMatchDf.as("a")
+      .join(combineDiscrepancy.as("b"), combineDiscrepancy("partnerid") === underMatchDf("src_partnerid"), "left")
+      .selectExpr("b.merchantnumber", "b.src_partnerid as rapid_partnerid", "a.partnerid as final_partnerid")
+
+    if (underMatchDfFinal.count() == 0) {
+      logger.info("No Undermatch Scenarios were Found")
+    } else {
+      logger.info("Undermatch Scenarios were Found")
+    }
+
+    val overMatchUnderMatchMerge = overMatchDfFinal.unionByName(underMatchDfFinal)
+
+    val fullMatchDf = combineDiscrepancy.as("a")
+      .join(overMatchUnderMatchMerge.as("b"), Seq("merchantnumber"), "left_anti")
+      .selectExpr("a.merchantnumber", "a.src_partnerid as rapid_partnerid", "a.partnerid as final_partnerid")
+      .persist()
+
+    if (fullMatchDf.count() == 0) {
+      logger.info("No Full match Scenarios were Found")
+    } else {
+      logger.info("Full match Scenarios Were Found")
+    }
+
+    val maintenanceMerge = overMatchUnderMatchMerge.unionByName(fullMatchDf)
+    val maintenanceMergeFinal = maintenanceMerge.withColumn("as_of_date", current_date().as("as_of_date"))
+
+    if (maintenanceMergeFinal.count() == combineNonDiscrepancy.count() + combineFull.count()) {
+      logger.info("Discrepancy records categorized successfully")
+    } else {
+      throw new Exception("Discrepancy records categorization Unsuccessful")
+    }
+
+    logger.info("Writing the final data into CSV for Rapid Teams use")
+
+    maintenanceMergeFinal.coalesce(1)
+      .write.option("header", true)
+      .option("delimiter", ",")
+      .mode("overwrite")
+      .csv(conf.getString("syf_partnerid.finalwrite.maintenance"))
+
+    logger.info("Syf PartnerID Maintenance job Finished")
+  }
+
+  def main(args: Array[String]): Unit = {
+    val spark = SparkSession.builder()
+      .appName("SyfPartnerIDMaintenance")
+      .getOrCreate()
+
+    val appName = spark.conf.get("spark.app.name")
+    val logger: Logger = LogManager.getLogger(appName)
+
+    logger.setLevel(Level.INFO)
+    logger.info("Reading the arguments passed to the spark job")
+
+    val confFile = args(0)
+    val conf = ConfigFactory.load(ConfigFactory.parseFile(new File(confFile)))
+
+    try {
+      logger.info("Reading all input tables")
+      exeMaintenance(conf, logger, spark)
+      logger.info("Synchrony Partner ID Maintenance engine process has completed successfully")
+      spark.sparkContext.getPersistentRDDs.foreach(_._2.unpersist())
+      spark.sqlContext.clearCache()
+      spark.stop()
+      sys.exit(0)
+    } catch {
+      case ex: Exception => 
+        logger.error("Error while executing SYF PARTNERID maintenance process", ex)
+        logger.error(s"Exception => $ex")
+        spark.sparkContext.getPersistentRDDs.foreach(_._2.unpersist())
+        sys.exit(1)
+    }
+  }
+}
